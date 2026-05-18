@@ -641,7 +641,25 @@ function bindEvents() {
     [els.weightAlpha, els.weightBeta, els.weightGamma].forEach((slider) => {
         slider.addEventListener('change', handleWeightChange);
     });
+    // Weights
+    [els.weightAlpha, els.weightBeta, els.weightGamma].forEach((slider) => {
+        slider.addEventListener('change', handleWeightChange);
+    });
+
+    // Scroll Progress Bar
+    window.addEventListener('scroll', () => {
+        const progressBar = document.getElementById('scroll-progress');
+        if (!progressBar) return;
+        
+        const scrollY = window.scrollY;
+        const docHeight = document.documentElement.scrollHeight;
+        const windowHeight = window.innerHeight;
+        
+        const width = (scrollY / (docHeight - windowHeight)) * 100;
+        progressBar.style.width = width + "%";
+    });
 }
+
 
 // ── CSS spin animation ──────────────────────────────────────────────
 const spinStyle = document.createElement('style');
