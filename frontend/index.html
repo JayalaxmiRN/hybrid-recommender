@@ -154,8 +154,15 @@
                 <span class="product-count" id="product-count"></span>
             </div>
             <div class="product-grid" id="product-grid"></div>
-            <div class="load-more" id="load-more-container" hidden>
-                <button class="btn btn--outline" id="load-more-btn">Load More</button>
+            <!-- Infinite-scroll sentinel (observed by IntersectionObserver) -->
+            <div id="scroll-sentinel" aria-hidden="true"></div>
+            <div class="infinite-scroll-loader" id="infinite-scroll-loader" hidden>
+                <div class="spinner" role="status"></div>
+                <span class="infinite-scroll-loader__text">Loading more products…</span>
+            </div>
+            <div class="infinite-scroll-end" id="infinite-scroll-end" hidden>
+                <span class="infinite-scroll-end__icon">✓</span>
+                <span class="infinite-scroll-end__text">No more products</span>
             </div>
         </section>
 

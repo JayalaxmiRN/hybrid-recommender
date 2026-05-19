@@ -603,17 +603,22 @@ def update_weights(w: WeightsUpdate):
 # ── Items ───────────────────────────────────────────────────────────
 
 @app.get("/api/items")
-def list_items(page: int = 1, per_page: int = 50):
-    """List products from Supabase with pagination."""
+def list_items(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100)):
+    """List products from Supabase with cursor-style pagination.
+
+    Supports ``?page=1&limit=20`` for infinite-scroll on the frontend.
+    Returns a ``has_more`` flag so the client knows when to stop fetching.
+    """
     sb = get_supabase()
-    offset = (page - 1) * per_page
+    offset = (page - 1) * limit
     result = sb.table('products') \
         .select('id, title, description, category, rating, avg_sentiment, review_count') \
         .order('rating', desc=True) \
-        .range(offset, offset + per_page - 1) \
+        .range(offset, offset + limit - 1) \
         .execute()
 
     count_result = sb.table('products').select('id', count='exact').limit(0).execute()
+    total = count_result.count or 0
 
     items = []
     for p in (result.data or []):
@@ -628,9 +633,10 @@ def list_items(page: int = 1, per_page: int = 50):
 
     return {
         "items": items,
-        "total": count_result.count or 0,
+        "total": total,
         "page": page,
-        "per_page": per_page,
+        "limit": limit,
+        "has_more": (offset + len(items)) < total,
     }
 
 

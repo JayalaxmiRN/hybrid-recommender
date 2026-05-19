@@ -29,12 +29,14 @@ const state = {
     products: [],    trending: [],    page: 1,
     perPage: 20,
     totalProducts: 0,
+    isLoading: false,
+    hasMore: true,
     searchTimer: null,
     searchResults: [],
     selectedSearchIdx: -1,
     isAuthSignUp: false,
     modelReady: false,
-    heatmapSelected: [],  // titles selected for comparison
+    scrollObserver: null,
 };
 
 // ── DOM Elements ────────────────────────────────────────────────────
@@ -67,8 +69,9 @@ const els = {
     trendingSection: $('trending-section'),
     trendingGrid: $('trending-grid'),
     skeletonLoader: $('skeleton-loader'),
-    loadMoreBtn: $('load-more-btn'),
-    loadMoreContainer: $('load-more-container'),
+    scrollSentinel: $('scroll-sentinel'),
+    infiniteLoader: $('infinite-scroll-loader'),
+    infiniteEnd: $('infinite-scroll-end'),
     recsSection: $('recs-section'),
     recsLoader: $('recs-loader'),
     recsStrip: $('recs-strip'),
@@ -352,31 +355,52 @@ function handleSearchKeydown(e) {
     }
 }
 
-// ── Product Loading ─────────────────────────────────────────────────
+// ── Product Loading (Infinite Scroll) ───────────────────────────────
 async function loadProducts(append = false) {
+    // Guard: prevent duplicate requests and loading past end
+    if (state.isLoading) return;
+    if (append && !state.hasMore) return;
+
+    state.isLoading = true;
+
     if (!append) {
         els.productGrid.innerHTML = '';
         els.skeletonLoader.hidden = false;
+        els.infiniteEnd.hidden = true;
         state.page = 1;
+        state.hasMore = true;
+        state.products = [];
+    } else {
+        els.infiniteLoader.hidden = false;
     }
 
     try {
-        const data = await API.get(`/api/search?q=&limit=${state.perPage}&offset=${(state.page - 1) * state.perPage}`);
-        const products = data.results || [];
-        state.totalProducts = data.total || products.length;
+        const data = await API.get(
+            `/api/items?page=${state.page}&limit=${state.perPage}`
+        );
+        const products = data.items || [];
+        state.totalProducts = data.total || 0;
+        state.hasMore = data.has_more ?? products.length >= state.perPage;
 
         if (!append) {
             els.skeletonLoader.hidden = true;
         }
 
         renderProducts(products, append);
-        els.productCount.textContent = `${state.products.length} products loaded`;
+        els.productCount.textContent = `${state.products.length} of ${state.totalProducts} products`;
 
-        // Show load more if there might be more
-        els.loadMoreContainer.hidden = products.length < state.perPage;
+        if (!state.hasMore) {
+            els.infiniteEnd.hidden = state.products.length === 0;
+        }
+
+        // Advance page for next fetch
+        state.page++;
     } catch (err) {
         els.skeletonLoader.hidden = true;
         toast('Failed to load products', 'error');
+    } finally {
+        state.isLoading = false;
+        els.infiniteLoader.hidden = true;
     }
 }
 
@@ -447,9 +471,13 @@ function renderTrending(items) {
 }
 
 async function loadSearchResults(query) {
+    // Pause infinite scroll during search
+    destroyScrollObserver();
+
     els.productGrid.innerHTML = '';
     els.skeletonLoader.hidden = false;
     els.productsTitle.textContent = `Results for "${query}"`;
+    els.infiniteEnd.hidden = true;
 
     try {
         const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=40`);
@@ -457,8 +485,8 @@ async function loadSearchResults(query) {
         els.skeletonLoader.hidden = true;
         els.productCount.textContent = `${products.length} results`;
         state.products = [];
+        state.hasMore = false;
         renderProducts(products, false);
-        els.loadMoreContainer.hidden = true;
     } catch {
         els.skeletonLoader.hidden = true;
         toast('Search failed', 'error');
@@ -628,8 +656,8 @@ async function handleBuild() {
         state.modelReady = true;
         toast(`Models built in ${data.build_time_seconds}s — ${data.items?.toLocaleString()} items`, 'success');
         updateStatus('ready', `Ready — ${data.items?.toLocaleString()} products`);
-        await loadProducts();
-        await loadTrending();
+        loadProducts();
+        setupScrollObserver();
     } catch (err) {
         toast('Build failed: ' + err.message, 'error');
     } finally {
@@ -651,12 +679,12 @@ async function checkStatus() {
         if (data.model_ready) {
             state.modelReady = true;
             updateStatus('ready', `Ready — ${count.toLocaleString()} products`);
-            await loadProducts();
-            await loadTrending();
+            loadProducts();
+            setupScrollObserver();
         } else if (count > 0) {
             updateStatus('has-data', `${count.toLocaleString()} products — Build models to start`);
-            await loadProducts();
-            await loadTrending();
+            loadProducts();
+            setupScrollObserver();
         } else {
             updateStatus('', 'No data — Upload a CSV or JSON dataset');
             els.skeletonLoader.hidden = true;
@@ -734,12 +762,6 @@ function bindEvents() {
 
     // Build
     els.buildBtn.addEventListener('click', handleBuild);
-
-    // Load more
-    els.loadMoreBtn.addEventListener('click', () => {
-        state.page++;
-        loadProducts(true);
-    });
 
     // Weights
     [els.weightAlpha, els.weightBeta, els.weightGamma].forEach((slider) => {
@@ -846,19 +868,37 @@ function renderHeatmap(labels, matrix) {
     els.heatmapContainer.innerHTML = html;
 }
 
-    // Scroll Progress Bar
-    window.addEventListener('scroll', () => {
-        const progressBar = document.getElementById('scroll-progress');
-        if (!progressBar) return;
-        
-        const scrollY = window.scrollY;
-        const docHeight = document.documentElement.scrollHeight;
-        const windowHeight = window.innerHeight;
-        
-        const width = (scrollY / (docHeight - windowHeight)) * 100;
-        progressBar.style.width = width + "%";
-    });
+// ── Infinite Scroll (Intersection Observer) ─────────────────────────
+function setupScrollObserver() {
+    // Tear down any previous observer to avoid duplicates / leaks
+    destroyScrollObserver();
+
+    if (!els.scrollSentinel) return;
+
+    state.scrollObserver = new IntersectionObserver(
+        (entries) => {
+            const entry = entries[0];
+            if (entry.isIntersecting && !state.isLoading && state.hasMore) {
+                loadProducts(true);
+            }
+        },
+        {
+            // Fire when sentinel is within 200px of the viewport bottom
+            rootMargin: '0px 0px 200px 0px',
+            threshold: 0,
+        }
+    );
+
+    state.scrollObserver.observe(els.scrollSentinel);
 }
+
+function destroyScrollObserver() {
+    if (state.scrollObserver) {
+        state.scrollObserver.disconnect();
+        state.scrollObserver = null;
+    }
+}
+
 // ── CSS spin animation ──────────────────────────────────────────────
 const spinStyle = document.createElement('style');
 spinStyle.textContent = `@keyframes spin { to { transform: rotate(360deg); } } .spin { animation: spin 1s linear infinite; }`;
@@ -895,4 +935,8 @@ async function init() {
     initAuth().catch((e) => console.warn('Auth error:', e));
     checkStatus().catch((e) => console.warn('Status error:', e));
 }
+
 document.addEventListener('DOMContentLoaded', init);
+
+// Clean up observer on page unload to prevent memory leaks
+window.addEventListener('beforeunload', destroyScrollObserver);
