@@ -27,6 +27,7 @@ const state = {
     user: null,
     isGuest: true,
     products: [],
+    allProducts: [],
     page: 1,
     perPage: 20,
     totalProducts: 0,
@@ -35,6 +36,12 @@ const state = {
     selectedSearchIdx: -1,
     isAuthSignUp: false,
     modelReady: false,
+
+    filters: {
+    category: '',
+    rating: '',
+    sentiment: '',
+},
 };
 
 // ── DOM Elements ────────────────────────────────────────────────────
@@ -73,6 +80,10 @@ const els = {
     weightAlpha: $('weight-alpha'),
     weightBeta: $('weight-beta'),
     weightGamma: $('weight-gamma'),
+    categoryFilter: $('category-filter'),
+    ratingFilter: $('rating-filter'),
+    sentimentFilter: $('sentiment-filter'),
+    clearFiltersBtn: $('clear-filters'),
 };
 
 // ── Utilities ───────────────────────────────────────────────────────
@@ -105,6 +116,37 @@ function sentimentBadge(score) {
     if (score > 0.05) return '<span class="product-card__sentiment sentiment-positive">Positive</span>';
     if (score < -0.05) return '<span class="product-card__sentiment sentiment-negative">Negative</span>';
     return '<span class="product-card__sentiment sentiment-neutral">Neutral</span>';
+}
+
+function applyFilters(products) {
+    return products.filter((p) => {
+
+        const matchesCategory =
+            !state.filters.category ||
+            p.category === state.filters.category;
+
+        const matchesRating =
+            !state.filters.rating ||
+            (p.rating || 0) >= Number(state.filters.rating);
+
+        let sentiment = 'neutral';
+
+        if ((p.avg_sentiment || 0) > 0.05) {
+            sentiment = 'positive';
+        } else if ((p.avg_sentiment || 0) < -0.05) {
+            sentiment = 'negative';
+        }
+
+        const matchesSentiment =
+            !state.filters.sentiment ||
+            sentiment === state.filters.sentiment;
+
+        return (
+            matchesCategory &&
+            matchesRating &&
+            matchesSentiment
+        );
+    });
 }
 
 function categoryIcon(cat) {
@@ -354,6 +396,8 @@ async function loadProducts(append = false) {
     try {
         const data = await API.get(`/api/search?q=&limit=${state.perPage}&offset=${(state.page - 1) * state.perPage}`);
         const products = data.results || [];
+        state.allProducts = products;
+        populateCategoryFilter(products);
         state.totalProducts = data.total || products.length;
 
         if (!append) {
@@ -375,6 +419,8 @@ async function loadSearchResults(query) {
     els.productGrid.innerHTML = '';
     els.skeletonLoader.hidden = false;
     els.productsTitle.textContent = `Results for "${query}"`;
+    state.allProducts = products;
+    populateCategoryFilter(products);
 
     try {
         const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=40`);
@@ -391,7 +437,21 @@ async function loadSearchResults(query) {
 }
 
 function renderProducts(products, append) {
+    products = applyFilters(products);
+    els.productCount.textContent = `${products.length} products`;
+    if (!append) {
+    els.productGrid.innerHTML = '';
+}
     if (!append) state.products = [];
+    if (!products.length) {
+    els.productGrid.innerHTML = `
+        <div class="no-results">
+            <div class="no-results__icon">🔍</div>
+            <div>No matching results found</div>
+        </div>
+    `;
+    return;
+}
 
     const fragment = document.createDocumentFragment();
 
@@ -576,6 +636,22 @@ async function handleWeightChange() {
     } catch {}
 }
 
+function populateCategoryFilter(products) {
+
+    const categories = [...new Set(
+        products
+            .map(p => p.category)
+            .filter(Boolean)
+    )];
+
+    els.categoryFilter.innerHTML = `
+        <option value="">All Categories</option>
+        ${categories.map(cat =>
+            `<option value="${cat}">${cat}</option>`
+        ).join('')}
+    `;
+}
+
 // ── Event Listeners ─────────────────────────────────────────────────
 function bindEvents() {
     // Search
@@ -633,6 +709,34 @@ function bindEvents() {
     [els.weightAlpha, els.weightBeta, els.weightGamma].forEach((slider) => {
         slider.addEventListener('change', handleWeightChange);
     });
+
+    els.categoryFilter.addEventListener('change', (e) => {
+    state.filters.category = e.target.value;
+    renderProducts(state.allProducts, false);
+});
+
+els.ratingFilter.addEventListener('change', (e) => {
+    state.filters.rating = e.target.value;
+    renderProducts(state.allProducts, false);
+});
+
+els.sentimentFilter.addEventListener('change', (e) => {
+    state.filters.sentiment = e.target.value;
+    renderProducts(state.allProducts, false);
+});
+
+els.clearFiltersBtn.addEventListener('click', () => {
+
+    state.filters.category = '';
+    state.filters.rating = '';
+    state.filters.sentiment = '';
+
+    els.categoryFilter.value = '';
+    els.ratingFilter.value = '';
+    els.sentimentFilter.value = '';
+
+    renderProducts(state.allProducts, false);
+});
 }
 
 // ── CSS spin animation ──────────────────────────────────────────────
