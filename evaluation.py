@@ -1,11 +1,21 @@
 """
-Evaluation Script — Precision@K, Recall@K, NDCG@K
-Compares: content-only, collaborative-only, and hybrid (different weight configs).
+evaluation.py — offline evaluation of the hybrid recommender.
+
+Fixes vs. previous version:
+  - seed_item is now resolved to a real title via item_df before being
+    passed to recommend(). Ratings rows carry ISBNs/IDs as their title;
+    without resolution every recommend() call silently fails (item not
+    found in content model) and the results table is empty.
+  - relevant set is also ID→title resolved so P/R/NDCG are computed in
+    the same title space as the recommendations.
+  - Added per-config skip count column so silent failures surface.
+  - Debug block prints resolved seed title so the fix is easy to verify.
 """
+
 import os
 import sys
+import random
 import numpy as np
-import pandas as pd
 from math import log2
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -13,161 +23,255 @@ sys.path.insert(0, os.path.dirname(__file__))
 from dataset_manager import DatasetManager
 from nlp_engine import batch_analyze, aggregate_sentiment_by_item
 from content_model import ContentRecommender
-from collaborative_model import CollaborativeRecommender
+from collaborative_model import get_collaborative_recommender
 from hybrid_model import HybridRecommender
 
 
-def precision_at_k(recommended, relevant, k):
-    """Proportion of top-K recommendations that are relevant."""
-    rec_k = recommended[:k]
-    hits = len(set(rec_k) & set(relevant))
-    return hits / k if k > 0 else 0
+# ─────────────────────────────────────────────
+#  Metric helpers
+# ─────────────────────────────────────────────
+
+def precision_at_k(rec, rel, k):
+    rec = rec[:k]
+    return len(set(rec) & set(rel)) / k if k else 0.0
 
 
-def recall_at_k(recommended, relevant, k):
-    """Proportion of relevant items found in top-K recommendations."""
-    rec_k = recommended[:k]
-    hits = len(set(rec_k) & set(relevant))
-    return hits / len(relevant) if len(relevant) > 0 else 0
+def recall_at_k(rec, rel, k):
+    rec = rec[:k]
+    return len(set(rec) & set(rel)) / len(rel) if rel else 0.0
 
 
-def ndcg_at_k(recommended, relevant, k):
-    """Normalized Discounted Cumulative Gain @ K."""
-    rec_k = recommended[:k]
-    dcg = 0.0
-    for i, item in enumerate(rec_k):
-        if item in relevant:
-            dcg += 1.0 / log2(i + 2)  # i+2 because log2(1) = 0
-    # Ideal DCG
-    ideal_count = min(len(relevant), k)
-    idcg = sum(1.0 / log2(i + 2) for i in range(ideal_count))
-    return dcg / idcg if idcg > 0 else 0
+def ndcg_at_k(rec, rel, k):
+    dcg  = sum(1 / log2(i + 2) for i, x in enumerate(rec[:k]) if x in rel)
+    idcg = sum(1 / log2(i + 2) for i in range(min(len(rel), k)))
+    return dcg / idcg if idcg else 0.0
 
 
-def evaluate():
-    """Run the full evaluation pipeline."""
-    # 1. Load data
+# ─────────────────────────────────────────────
+#  Title resolution helpers
+# ─────────────────────────────────────────────
+
+def build_id_to_title_map(interaction_df):
+    """
+    Return {item_id_str -> real_title} built from rows where the title
+    is not the same as the item_id (i.e. a real book title was detected).
+    """
+    if 'item_id' not in interaction_df.columns:
+        return {}
+
+    real = interaction_df[
+        interaction_df['title'].astype(str) != interaction_df['item_id'].astype(str)
+    ][['item_id', 'title']].drop_duplicates('item_id')
+
+    return dict(zip(real['item_id'].astype(str), real['title'].astype(str)))
+
+
+def resolve_title(raw, id_to_title, valid_titles):
+    """
+    Map a raw value (real title or ISBN/ID) to a title present in
+    item_df.  Returns None if no match can be found.
+    """
+    raw = str(raw)
+    if raw in valid_titles:
+        return raw
+    resolved = id_to_title.get(raw)
+    if resolved and resolved in valid_titles:
+        return resolved
+    return None
+
+
+# ─────────────────────────────────────────────
+#  Main evaluation
+# ─────────────────────────────────────────────
+
+def evaluate(
+    max_nlp_rows: int = 2000,
+    max_test_users: int = 500,
+    min_interactions: int = 5,
+    relevance_threshold: float = 3.0,
+    K: int = 10,
+    seed: int = 42,
+):
+    random.seed(seed)
+    np.random.seed(seed)
+
+    # ── 1. Load datasets ──────────────────────────────────────────────
     dm = DatasetManager()
-    data_dir = os.path.join(os.path.dirname(__file__), 'datasets')
-    
-    # Try to load all user-provided datasets first
-    datasets_to_load = ['books.csv', 'booksdata.csv', 'ratings.csv']
-    loaded_any = False
-    
-    for filename in datasets_to_load:
-        filepath = os.path.join(data_dir, filename)
-        if os.path.exists(filepath):
-            print(f"Loading dataset: {filename}...")
-            dm.load_csv(filepath)
-            loaded_any = True
-            
-    # Fallback to sample data if no user datasets found
-    if not loaded_any:
-        sample_file = os.path.join(data_dir, 'sample_products.csv')
-        if not os.path.exists(sample_file):
-            print("ERROR: datasets not found. Run: python scripts/generate_sample_data.py")
-            return
-        print("Loading sample_products.csv...")
-        dm.load_csv(sample_file)
+    data_dir = os.path.join(os.path.dirname(__file__), "datasets")
+
+    loaded = False
+    for fname in ["books.csv", "booksdata.csv", "ratings.csv"]:
+        path = os.path.join(data_dir, fname)
+        if os.path.exists(path):
+            print(f"Loading {fname} …")
+            dm.load_csv(path)
+            loaded = True
+
+    if not loaded:
+        print("❌  No dataset CSV found in", data_dir)
+        return
 
     interaction_df, item_df = dm.merge_all()
-    # Create synthetic users if dataset has only one user
-    if interaction_df['user_id'].nunique() <= 1:
-     print("Generating synthetic users for evaluation...")
+    print(f"Total rows      : {len(interaction_df):,}")
+    print(f"Unique users    : {interaction_df['user_id'].nunique():,}")
+    print(f"Unique items    : {interaction_df['title'].nunique():,}")
 
-    interaction_df = interaction_df.copy()
+    if interaction_df['user_id'].nunique() < 2:
+        print("❌  Not enough users — check dataset merge.")
+        return
 
-    synthetic_users = []
-    num_fake_users = 50
+    # ── 2. NLP sentiment enrichment (sample only, for speed) ─────────
+    print(f"\nRunning NLP on {min(max_nlp_rows, len(interaction_df)):,} rows …")
+    nlp_sample = batch_analyze(interaction_df.head(max_nlp_rows), "review_text")
+    sentiment  = aggregate_sentiment_by_item(nlp_sample, "title")
+    item_df    = item_df.merge(sentiment, on="title", how="left")
+    item_df["avg_sentiment"] = item_df["avg_sentiment"].fillna(0.0)
 
-    for i in range(num_fake_users):
-        temp = interaction_df.sample(
-            min(40, len(interaction_df)),
-            replace=True,
-            random_state=i
-        ).copy()
+    # ── 3. Build ID → real-title lookup ──────────────────────────────
+    # item_df is the ground-truth title space for the content model.
+    # interaction_df may have bare ISBNs/IDs as titles (from ratings.csv).
+    valid_titles = set(item_df["title"].astype(str).tolist())
+    id_to_title  = build_id_to_title_map(interaction_df)
 
-        temp['user_id'] = f"user_{i}"
-        synthetic_users.append(temp)
+    print(f"Title map size  : {len(id_to_title):,}  id→title entries")
+    print(f"Valid titles    : {len(valid_titles):,}")
 
-    interaction_df = pd.concat(synthetic_users, ignore_index=True)
+    # ── 4. Build test set ─────────────────────────────────────────────
+    print("\nBuilding test set …")
+    test_pairs = []   # (user_id, resolved_seed_title, [resolved_relevant_titles])
 
-    print("Synthetic users created:",
-          interaction_df['user_id'].nunique())
-    print("Running NLP Sentiment Analysis on reviews...")
-    interaction_df = batch_analyze(interaction_df.head(2000), 'review_text')
-    sentiment_agg = aggregate_sentiment_by_item(interaction_df, 'title')
-    item_df = item_df.merge(sentiment_agg, on='title', how='left')
-    item_df['avg_sentiment'] = item_df['avg_sentiment'].fillna(0.0)
+    for user_id, group in interaction_df.groupby("user_id"):
+      if len(group) < min_interactions:
+        continue
 
-    # 2. Train-test split (leave-one-out per user)
-    # For each user, hold out their highest-rated item as "ground truth"
-    user_groups = interaction_df.groupby('user_id')
-    test_pairs = []
-    for user_id, group in user_groups:
-        if len(group) < 2:
-            continue
-        top_item = group.sort_values('rating', ascending=False).iloc[0]['title']
-        # Relevant items = items this user rated >= 3
-        relevant = group[group['rating'] >= 3]['title'].tolist()
-        if relevant:
-            test_pairs.append((user_id, top_item, relevant))
-        print("Interaction rows:", len(interaction_df))
-        print("Unique users:", interaction_df['user_id'].nunique())
+      group_sorted = group.sort_values("rating", ascending=False)
 
-        user_counts = interaction_df.groupby('user_id').size()
-        print(user_counts.describe())
+      seed_raw = group_sorted.iloc[0]["title"]
+      seed_title = resolve_title(seed_raw, id_to_title, valid_titles)
 
-        if not test_pairs:
-            print("Not enough data for evaluation.")
-            return  
+    # fallback: if not resolved, try direct match
+      if seed_title is None and seed_raw in valid_titles:
+        seed_title = seed_raw
 
-    # 3. Build models
+      if seed_title is None:
+        continue
+
+    # relevant items
+      high_rated_raw = group[group["rating"] >= relevance_threshold]["title"].tolist()
+
+      resolved_rel = [
+        resolve_title(x, id_to_title, valid_titles)
+        for x in high_rated_raw
+      ]
+      resolved_rel = [x for x in resolved_rel if x is not None]
+
+    # fallback if empty
+      if not resolved_rel:
+        median_r = group["rating"].median()
+        fallback_raw = group[group["rating"] >= median_r]["title"].tolist()
+
+        resolved_rel = [
+            resolve_title(x, id_to_title, valid_titles)
+            for x in fallback_raw
+        ]
+        resolved_rel = [x for x in resolved_rel if x is not None]
+
+      if not resolved_rel:
+        continue
+
+      test_pairs.append((user_id, seed_title, resolved_rel))
+
+    print(f"Eligible test users : {len(test_pairs):,}")
+
+    if len(test_pairs) < 2:
+        print(
+            "❌  Not enough evaluation data — "
+            "try lowering min_interactions or relevance_threshold."
+        )
+        return
+
+    if len(test_pairs) > max_test_users:
+        test_pairs = random.sample(test_pairs, max_test_users)
+        print(f"Sampled to          : {len(test_pairs):,} users")
+
+    # ── 5. Initialise models ──────────────────────────────────────────
+    print("\nInitialising models …")
     content_model = ContentRecommender(item_df)
-    collab_model = CollaborativeRecommender(interaction_df)
+    collab_model  = get_collaborative_recommender(interaction_df)
 
+    # ── 6. Debug: smoke-test one recommend() call ─────────────────────
+    print("\n[DEBUG] Testing a single recommend() call …")
+    test_uid, test_item, test_rel = test_pairs[0]
+    print(f"  user_id      : {test_uid}")
+    print(f"  seed_item    : {test_item!r}")
+    print(f"  relevant[:3] : {test_rel[:3]}")
+
+    try:
+        hybrid_debug = HybridRecommender(content_model, collab_model, item_df, 0.5, 0.5, 0.0)
+        recs_debug   = hybrid_debug.recommend(test_item, top_n=10)
+        print(f"  recs returned : {len(recs_debug)}")
+        print(f"  sample recs   : {[x['title'] for x in recs_debug[:3]]}")
+    except Exception:
+        import traceback
+        print("  ❌  recommend() raised an exception:")
+        traceback.print_exc()
+        print("  ⚠️   Continuing with full evaluation.\n")
+
+    # ── 7. Evaluate configurations ────────────────────────────────────
     configs = [
-    ("Alpha 0.3", 0.3, 0.7, 0.0),
-    ("Alpha 0.5", 0.5, 0.5, 0.0),
-    ("Alpha 0.7", 0.7, 0.3, 0.0),
+        ("Alpha=0.3", 0.3, 0.7, 0.0),
+        ("Alpha=0.5", 0.5, 0.5, 0.0),
+        ("Alpha=0.7", 0.7, 0.3, 0.0),
     ]
 
-    K = 10
+    header = f"{'Config':<12} {'P@'+str(K):<10} {'R@'+str(K):<10} {'NDCG@'+str(K):<10} {'Users':<8} Skipped"
+    print(f"\n{header}")
+    print("-" * len(header))
 
-    print(f"\n{'='*70}")
-    print(f"  EVALUATION REPORT — Precision@{K}, Recall@{K}, NDCG@{K}")
-    print(f"  Test cases: {len(test_pairs)} users")
-    print(f"{'='*70}\n")
-
-    results_table = []
-
-    for config_name, a, b, g in configs:
+    results = {}
+    for name, a, b, g in configs:
         hybrid = HybridRecommender(content_model, collab_model, item_df, a, b, g)
 
-        precisions, recalls, ndcgs = [], [], []
+        p_list, r_list, n_list = [], [], []
+        skipped = 0
 
-        for user_id, query_item, relevant_items in test_pairs:
-            recs_raw = hybrid.recommend(query_item, top_n=K)
-            rec_titles = [r['title'] for r in recs_raw]
+        for user_id, seed_item, rel in test_pairs:
+            try:
+                recs       = hybrid.recommend(seed_item, top_n=K)
+                rec_titles = [x["title"] for x in recs]
+            except Exception:
+                skipped += 1
+                continue
 
-            precisions.append(precision_at_k(rec_titles, relevant_items, K))
-            recalls.append(recall_at_k(rec_titles, relevant_items, K))
-            ndcgs.append(ndcg_at_k(rec_titles, relevant_items, K))
+            p_list.append(precision_at_k(rec_titles, rel, K))
+            r_list.append(recall_at_k(rec_titles, rel, K))
+            n_list.append(ndcg_at_k(rec_titles, rel, K))
 
-        avg_p = np.mean(precisions)
-        avg_r = np.mean(recalls)
-        avg_n = np.mean(ndcgs)
+        evaluated = len(p_list)
+        if evaluated == 0:
+            print(f"{name:<12} — no successful recommendations (all {skipped} skipped)")
+            continue
 
-        results_table.append((config_name, avg_p, avg_r, avg_n))
-        print(f"  {config_name:30s}  P@{K}: {avg_p:.4f}  R@{K}: {avg_r:.4f}  NDCG@{K}: {avg_n:.4f}")
+        p_mean = np.mean(p_list)
+        r_mean = np.mean(r_list)
+        n_mean = np.mean(n_list)
 
-    print(f"\n{'='*70}")
+        print(
+            f"{name:<12} {p_mean:<10.4f} {r_mean:<10.4f} {n_mean:<10.4f} "
+            f"{evaluated:<8} {skipped}"
+        )
+        results[name] = {"P@K": p_mean, "R@K": r_mean, "NDCG@K": n_mean, "n": evaluated}
 
-    # Find best config
-    best = max(results_table, key=lambda x: x[3])  # best NDCG
-    print(f"\n  ★ Best config (by NDCG@{K}): {best[0]}")
-    print(f"    Precision: {best[1]:.4f}  Recall: {best[2]:.4f}  NDCG: {best[3]:.4f}\n")
+    # ── 8. Summary ────────────────────────────────────────────────────
+    if results:
+        best = max(results, key=lambda x: results[x]["NDCG@K"])
+        print(
+            f"\n✅  Best config by NDCG@{K}: {best}  "
+            f"(NDCG = {results[best]['NDCG@K']:.4f})"
+        )
+    else:
+        print("\n⚠️   No results produced — review model outputs.")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     evaluate()

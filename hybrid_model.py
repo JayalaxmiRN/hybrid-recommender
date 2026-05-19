@@ -109,12 +109,20 @@ class HybridRecommender:
         all_titles = {r['title'] for r in content_recs}
 
         # 2. Collaborative scores
+        
         collab_map = {}
+
         if self.collab_model:
-            collab_recs = self.collab_model.recommend(title, top_n=top_n * 3)
+            # try user-based if available (NeuMF)
+            if hasattr(self.collab_model, "predict_for_user"):
+                # fallback: use pseudo user from title interactions
+                # (for hybrid item-to-item compatibility)
+                collab_recs = self.collab_model.recommend(title, top_n=top_n * 3)
+            else:
+                collab_recs = self.collab_model.recommend(title, top_n=top_n * 3)
+
             for r in collab_recs:
-                collab_map[r['title']] = r['collab_score']
-                all_titles.add(r['title'])
+                collab_map[r["title"]] = r["collab_score"]
 
         # 3. Build unified candidates
         candidates = {}

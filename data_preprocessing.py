@@ -1,196 +1,194 @@
+"""
+data_preprocessing.py — Generic and dataset-specific preprocessors.
+
+The generic `preprocess()` function is called by DatasetManager on every
+CSV before it is passed to the adapter.  The named functions are kept for
+standalone / notebook use.
+"""
+
+import os
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
-import os
 
 
-def preprocess_books_data(filepath="datasets/booksdata.csv"):
+# ─────────────────────────────────────────────────────────────────────
+#  Generic preprocessor  (used by DatasetManager)
+# ─────────────────────────────────────────────────────────────────────
+
+def preprocess(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Preprocess the books dataset.
+    Lightweight, schema-agnostic cleaning applied to every loaded CSV.
 
-    Operations:
-    - Remove duplicate entries
-    - Handle missing values
-    - Encode categorical columns
-    - Normalize ratings from 1–5 to 0–1 scale
-
-    Returns:
-        Cleaned pandas DataFrame
+    Steps
+    -----
+    1. Drop fully-duplicate rows.
+    2. Fill missing object columns with "Unknown".
+    3. Fill missing numeric columns with the column median.
+    4. Strip leading/trailing whitespace from all column names so that
+       'Book-Title ' and 'Book-Title' are treated identically.
     """
+    df = df.copy()
 
-    if not os.path.exists(filepath):
-        raise FileNotFoundError(f"{filepath} not found")
+    # Normalise column names
+    df.columns = [c.strip() for c in df.columns]
 
-    df = pd.read_csv(filepath)
-
-    print(f"Original shape: {df.shape}")
-
-    # Remove duplicates
+    # Drop duplicates
     df = df.drop_duplicates()
 
-    print(f"After removing duplicates: {df.shape}")
-
-    # Handle missing categorical values
-    for col in df.select_dtypes(include=['object']).columns:
+    # Fill missing values
+    for col in df.select_dtypes(include=["object"]).columns:
         df[col] = df[col].fillna("Unknown")
 
-    # Handle missing numeric values
-    for col in df.select_dtypes(include=['int64', 'float64']).columns:
+    for col in df.select_dtypes(include=["number"]).columns:
         df[col] = df[col].fillna(df[col].median())
-
-    # Encode categorical columns
-    categorical_cols = ['authors', 'publisher']
-
-    le = LabelEncoder()
-
-    for col in categorical_cols:
-        if col in df.columns:
-            df[col] = le.fit_transform(df[col].astype(str))
-
-    # Normalize ratings if present
-    if 'rating' in df.columns:
-        scaler = MinMaxScaler()
-
-        df['rating_normalized'] = scaler.fit_transform(
-            df[['rating']]
-        )
-
-    print(f"Final shape: {df.shape}")
 
     return df
 
 
-def preprocess_ratings_data(filepath="datasets/ratings.csv"):
+# ─────────────────────────────────────────────────────────────────────
+#  Dataset-specific preprocessors  (standalone / notebook use)
+# ─────────────────────────────────────────────────────────────────────
+
+def preprocess_books_data(filepath: str = "datasets/booksdata.csv") -> pd.DataFrame:
     """
-    Preprocess the ratings dataset.
+    Preprocess the books metadata dataset.
 
-    Operations:
-    - Remove duplicate user-book pairs
-    - Handle missing values
-    - Normalize ratings from 1–5 to 0–1 scale
-
-    Returns:
-        Cleaned pandas DataFrame
+    - Removes duplicates
+    - Fills missing values
+    - Label-encodes 'authors' and 'publisher'
+    - Min-max normalises 'rating' → 'rating_normalized'
     """
-
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"{filepath} not found")
 
     df = pd.read_csv(filepath)
+    print(f"[books]  original shape : {df.shape}")
 
-    print(f"Original shape: {df.shape}")
+    df = df.drop_duplicates()
 
-    # Remove duplicate user-book pairs
-    if 'user_id' in df.columns and 'book_id' in df.columns:
-        df = df.drop_duplicates(subset=['user_id', 'book_id'])
+    for col in df.select_dtypes(include=["object"]).columns:
+        df[col] = df[col].fillna("Unknown")
+    for col in df.select_dtypes(include=["number"]).columns:
+        df[col] = df[col].fillna(df[col].median())
+
+    le = LabelEncoder()
+    for col in ["authors", "publisher"]:
+        if col in df.columns:
+            df[col] = le.fit_transform(df[col].astype(str))
+
+    if "rating" in df.columns:
+        scaler = MinMaxScaler()
+        df["rating_normalized"] = scaler.fit_transform(df[["rating"]])
+
+    print(f"[books]  final shape    : {df.shape}")
+    return df
+
+
+def preprocess_ratings_data(filepath: str = "datasets/ratings.csv") -> pd.DataFrame:
+    """
+    Preprocess the user-ratings dataset.
+
+    - Removes duplicate (user, book) pairs
+    - Fills missing values
+    - Min-max normalises 'rating' → 'rating_normalized'
+    """
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"{filepath} not found")
+
+    df = pd.read_csv(filepath)
+    print(f"[ratings] original shape : {df.shape}")
+
+    # detect user/item columns robustly
+    user_col = _find_col(df.columns, ["user_id", "user-id", "userid"])
+    item_col = _find_col(df.columns, ["book_id", "isbn", "item_id"])
+
+    if user_col and item_col:
+        df = df.drop_duplicates(subset=[user_col, item_col])
     else:
         df = df.drop_duplicates()
 
-    print(f"After removing duplicates: {df.shape}")
-
-    # Handle missing categorical values
-    for col in df.select_dtypes(include=['object']).columns:
+    for col in df.select_dtypes(include=["object"]).columns:
         df[col] = df[col].fillna("Unknown")
-
-    # Handle missing numeric values
-    for col in df.select_dtypes(include=['int64', 'float64']).columns:
+    for col in df.select_dtypes(include=["number"]).columns:
         df[col] = df[col].fillna(df[col].median())
 
-    # Normalize ratings
-    if 'rating' in df.columns:
+    rating_col = _find_col(df.columns, ["rating", "book-rating", "book_rating", "score"])
+    if rating_col:
         scaler = MinMaxScaler()
+        df["rating_normalized"] = scaler.fit_transform(df[[rating_col]])
 
-        df['rating_normalized'] = scaler.fit_transform(
-            df[['rating']]
-        )
-
-    print(f"Final shape: {df.shape}")
-
+    print(f"[ratings] final shape    : {df.shape}")
     return df
 
 
-def preprocess_sentiment_data(
-    filepath="datasets/customer_sentiment.csv"
-):
+def preprocess_sentiment_data(filepath: str = "datasets/customer_sentiment.csv") -> pd.DataFrame:
     """
-    Preprocess the customer sentiment dataset.
+    Preprocess the customer-sentiment dataset.
 
-    Operations:
-    - Remove duplicates
-    - Handle missing values
-    - Encode categorical columns
-    - Normalize customer ratings
-
-    Returns:
-        Cleaned pandas DataFrame
+    - Removes duplicates
+    - Fills missing values
+    - Label-encodes key categorical columns
+    - Min-max normalises 'customer_rating' → 'rating_normalized'
     """
-
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"{filepath} not found")
 
     df = pd.read_csv(filepath)
+    print(f"[sentiment] original shape : {df.shape}")
 
-    print(f"Original shape: {df.shape}")
-
-    # Remove duplicates
     df = df.drop_duplicates()
 
-    print(f"After removing duplicates: {df.shape}")
-
-    # Handle missing categorical values
-    for col in df.select_dtypes(include=['object']).columns:
+    for col in df.select_dtypes(include=["object"]).columns:
         df[col] = df[col].fillna("Unknown")
-
-    # Handle missing numeric values
-    for col in df.select_dtypes(include=['int64', 'float64']).columns:
+    for col in df.select_dtypes(include=["number"]).columns:
         df[col] = df[col].fillna(df[col].median())
 
-    # Encode categorical columns
-    categorical_cols = [
-        'gender',
-        'age_group',
-        'region',
-        'product_category',
-        'purchase_channel',
-        'platform',
-        'sentiment'
-    ]
-
     le = LabelEncoder()
-
-    for col in categorical_cols:
+    for col in ["gender", "age_group", "region", "product_category",
+                "purchase_channel", "platform", "sentiment"]:
         if col in df.columns:
             df[col] = le.fit_transform(df[col].astype(str))
 
-    # Normalize customer ratings
-    if 'customer_rating' in df.columns:
+    if "customer_rating" in df.columns:
         scaler = MinMaxScaler()
+        df["rating_normalized"] = scaler.fit_transform(df[["customer_rating"]])
 
-        df['rating_normalized'] = scaler.fit_transform(
-            df[['customer_rating']]
-        )
-
-    print(f"Final shape: {df.shape}")
-
+    print(f"[sentiment] final shape    : {df.shape}")
     return df
 
 
+# ─────────────────────────────────────────────────────────────────────
+#  Internal helper
+# ─────────────────────────────────────────────────────────────────────
+
+def _find_col(columns, candidates: list) -> str | None:
+    """Return the first column whose normalised name matches a candidate."""
+    norm = {c: c.lower().replace("-", "").replace("_", "").replace(" ", "")
+            for c in columns}
+    for candidate in candidates:
+        key = candidate.lower().replace("-", "").replace("_", "").replace(" ", "")
+        for col, n in norm.items():
+            if key == n:
+                return col
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  Standalone entry point
+# ─────────────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
-
     print("=== Preprocessing Books Data ===")
-
     books_df = preprocess_books_data()
 
     print("\n=== Preprocessing Ratings Data ===")
-
     ratings_df = preprocess_ratings_data()
 
     print("\n=== Preprocessing Sentiment Data ===")
-
     sentiment_df = preprocess_sentiment_data()
 
-    print("\n✅ All datasets preprocessed successfully!")
-
-    print(f"Books Dataset Shape: {books_df.shape}")
-    print(f"Ratings Dataset Shape: {ratings_df.shape}")
-    print(f"Sentiment Dataset Shape: {sentiment_df.shape}")
+    print("\nAll datasets preprocessed successfully!")
+    print(f"Books    : {books_df.shape}")
+    print(f"Ratings  : {ratings_df.shape}")
+    print(f"Sentiment: {sentiment_df.shape}")
