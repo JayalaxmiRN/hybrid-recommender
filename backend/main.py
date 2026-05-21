@@ -38,7 +38,7 @@ from llm_explainer import get_explainer
 
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
-logger = logging.getLogger("hybrid_recommender.api")
+
 RESPONSE_TIME_HEADER = "X-Response-Time-ms"
 DEFAULT_SLOW_RESPONSE_THRESHOLD_MS = 1000.0
 
