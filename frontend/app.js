@@ -228,35 +228,17 @@ function categoryIcon(cat) {
     return '📦';
 }
 
-// ── Wishlist ────────────────────────────────────────────────────────
-function getWishlist() {
-    return JSON.parse(localStorage.getItem('wishlist')) || [];
-}
-
-function saveWishlist(items) {
-    localStorage.setItem('wishlist', JSON.stringify(items));
-}
-
-function isWishlisted(title) {
-    return getWishlist().some(item => item.title === title);
-}
-
-function toggleWishlist(product) {
-    let wishlist = getWishlist();
-
-    const exists = wishlist.some(item => item.title === product.title);
-
-    if (exists) {
-        wishlist = wishlist.filter(item => item.title !== product.title);
-        toast('Removed from wishlist', 'info');
-    } else {
-        wishlist.push(product);
-        toast('Added to wishlist', 'success');
-    }
-
-    saveWishlist(wishlist);
-
-    renderProducts(state.allProducts, false);
+// ── Meta Tags ───────────────────────────────────────────────────────
+// ── Meta Tags ───────────────────────────────────────────────────────
+function setPageMeta(title, description) {
+    const fullTitle = title ? `${title} | HybridRec` : 'HybridRec — Smart Recommendations';
+    document.title = fullTitle;
+    const descTag = document.querySelector('meta[name="description"]');
+    if (descTag) descTag.content = description;
+    const ogTitle = document.querySelector('meta[property="og:title"]');
+    if (ogTitle) ogTitle.content = fullTitle;
+    const ogDesc = document.querySelector('meta[property="og:description"]');
+    if (ogDesc) ogDesc.content = description;
 }
 
 // ── API Helpers ─────────────────────────────────────────────────────
@@ -559,14 +541,19 @@ async function loadProducts(append = false) {
     state.isLoading = true;
 
     if (!append) {
-    showSkeletons(els.productGrid, 8);
+        setPageMeta(
+            'All Products', 
+            'Browse all products on HybridRec — personalised recommendations just for you.'
+        );
+    }
 
-    els.skeletonLoader.hidden = true;
-    els.infiniteEnd.hidden = true;
-
-    state.page = 1;
-    state.hasMore = true;
-    state.products = [];
+    if (!append) {
+        els.productGrid.innerHTML = '';
+        els.skeletonLoader.hidden = false;
+        els.infiniteEnd.hidden = true;
+        state.page = 1;
+        state.hasMore = true;
+        state.products = [];
     } else {
         els.infiniteLoader.hidden = false;
     }
@@ -674,6 +661,7 @@ async function loadSearchResults(query) {
     els.productGrid.innerHTML = '';
     els.skeletonLoader.hidden = false;
     els.productsTitle.textContent = `Results for "${query}"`;
+    setPageMeta(`Search: ${query}`, `Showing results for "${query}" on HybridRec.`);
     els.infiniteEnd.hidden = true;
 
     try {
@@ -946,6 +934,7 @@ async function loadRecommendations(title) {
     }
 
     els.recsSection.hidden = false;
+    setPageMeta(`Recommendations for ${title}`, `Products similar to "${title}" using hybrid filtering.`);
     els.recsLoader.hidden = false;
     els.recsStrip.hidden = true;
     els.recsStrip.innerHTML = '';
@@ -1324,6 +1313,7 @@ function initBackToTop() {
     });
 }
 // ── Init ────────────────────────────────────────────────────────────
+setPageMeta(null, 'A hybrid recommender fusing TF-IDF, SVD and VADER sentiment.');
 async function init() {
     bindEvents();
     initTypeToSearch();
