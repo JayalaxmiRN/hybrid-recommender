@@ -524,6 +524,35 @@ async function loadSearchResults(query) {
     }
 }
 
+// ── Lazy Loading ────────────────────────────────────────────────────
+const lazyObserver = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        const img = entry.target;
+        img.src = img.dataset.src;
+        img.onload = () => img.classList.add('loaded');
+        lazyObserver.unobserve(img);
+    });
+}, { rootMargin: '200px 0px', threshold: 0.01 });
+
+function createLazyImage(src, alt) {
+    const img = document.createElement('img');
+    img.alt = alt || '';
+    img.setAttribute('loading', 'lazy');
+
+    if ('IntersectionObserver' in window) {
+        img.dataset.src = src;
+        img.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300"%3E%3Crect width="400" height="300" fill="%23232f3e"/%3E%3C/svg%3E';
+        lazyObserver.observe(img);
+    } else {
+        img.src = src;
+        img.classList.add('loaded');
+    }
+
+    img.addEventListener('error', () => img.classList.add('error'));
+    return img;
+}
+
 function renderProducts(products, append) {
     if (!append) state.products = [];
 
@@ -532,12 +561,12 @@ function renderProducts(products, append) {
     products.forEach((p, i) => {
         state.products.push(p);
         const card = document.createElement('div');
-        card.className = 'product-card';
+        card.className = p.image ? 'product-card' : 'product-card product-card--skeleton';
         card.style.animationDelay = `${i * 50}ms`;
         const isChecked = state.heatmapSelected.includes(p.title);
         card.innerHTML = `
             <div class="product-card__image">
-                ${categoryIcon(p.category)}
+                ${!p.image ? categoryIcon(p.category) : ''}
             </div>
             <div class="product-card__body">
                 ${p.category ? `<span class="product-card__category">${p.category}</span>` : ''}
@@ -561,6 +590,10 @@ function renderProducts(products, append) {
                 </button>
             </div>
         `;
+        if (p.image) {
+            const imgEl = createLazyImage(p.image, p.title);
+            card.querySelector('.product-card__image').appendChild(imgEl);
+        }
 
         // Click → get recommendations
         card.querySelector('.btn--add-cart').addEventListener('click', (e) => {
