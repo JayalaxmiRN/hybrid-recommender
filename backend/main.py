@@ -243,6 +243,7 @@ class RealtimeRecommendationRequest(BaseModel):
     item_title: str
     top_n: int = 10
     explain: bool = False
+    llm_explain: bool = False
 
 
 class RealtimeRecommendationHub:
@@ -716,12 +717,21 @@ def build_models():
 @app.get("/api/recommend")
 @app.get("/api/recommend/{item_title}")
 def get_recommendations(
-    item_title: Optional[str] = None,
-    title: Optional[str] = Query(None, description="Item title to recommend from."),
+    item_title: str,
     top_n: int = 10,
     explain: bool = Query(False),
+    llm_explain: bool = Query(False),
 ):
     """Get hybrid recommendations for an item."""
+    return _recommendation_payload(
+        item_title, top_n=top_n, explain=explain, llm_explain=llm_explain
+    )
+
+
+def _recommendation_payload(
+    item_title: str, top_n: int = 10, explain: bool = False, llm_explain: bool = False
+):
+    """Build a recommendation response shared by HTTP and real-time transports."""
     if not models["ready"]:
         raise HTTPException(400, "Models not built. Build first via /api/build.")
     query_title = title or item_title
@@ -805,11 +815,46 @@ def get_similar_items(
     return response
 
 
-def _json_scalar(value):
-    """Return pandas/numpy scalar values in a JSON-serializable form."""
-    if hasattr(value, "item"):
-        return value.item()
-    return value
+@app.websocket("/ws/recommendations")
+async def recommendations_websocket(websocket: WebSocket):
+    """Stream recommendations whenever the browser reports a new interaction."""
+    await realtime_hub.connect(websocket)
+    try:
+        while True:
+            message = await websocket.receive_json()
+            request = RealtimeRecommendationRequest(**message)
+            top_n = max(1, min(50, request.top_n))
+            payload = _recommendation_payload(
+                request.item_title,
+                top_n=top_n,
+                explain=request.explain,
+                llm_explain=request.llm_explain,
+            )
+            await websocket.send_json({"type": "recommendations", **payload})
+    except WebSocketDisconnect:
+        realtime_hub.disconnect(websocket)
+    except HTTPException as exc:
+        await websocket.send_json({"type": "error", "status_code": exc.status_code, "detail": exc.detail})
+        realtime_hub.disconnect(websocket)
+    except Exception as exc:
+        logger.exception("Recommendation websocket failed: %s", exc)
+        await websocket.send_json({"type": "error", "status_code": 500, "detail": "Recommendation stream failed."})
+        realtime_hub.disconnect(websocket)
+
+
+@app.post("/api/realtime/behavior")
+async def realtime_behavior_update(event: RealtimeRecommendationRequest):
+    """HTTP fallback for clients that cannot keep a WebSocket connection open."""
+    top_n = max(1, min(50, event.top_n))
+    payload = _recommendation_payload(
+        event.item_title,
+        top_n=top_n,
+        explain=event.explain,
+        llm_explain=event.llm_explain,
+    )
+    message = {"type": "recommendations", **payload}
+    await realtime_hub.broadcast(message)
+    return message
 
 
 # ── Weights ─────────────────────────────────────────────────────────
