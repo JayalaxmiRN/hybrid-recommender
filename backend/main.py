@@ -26,9 +26,8 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi import Depends
+from fastapi.responses import FileResponse
+from collections import Counter
 from pydantic import BaseModel
 from typing import Any, Optional
 from dotenv import load_dotenv
