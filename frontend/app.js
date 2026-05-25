@@ -1874,6 +1874,7 @@ document.head.appendChild(spinStyle);
 // ── Init ────────────────────────────────────────────────────────────
 async function init() {
     bindEvents();
+    initDebugMode();
     loadSavedWeights();
     initTypeToSearch();
 
