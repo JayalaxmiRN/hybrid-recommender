@@ -8,6 +8,7 @@ import io
 import time
 import logging
 import math
+import secrets
 from collections import deque, Counter
 from threading import Lock
 from datetime import datetime, timezone
@@ -115,25 +116,26 @@ def _set_cache_headers(response: Response, status: str) -> None:
     response.headers["X-Cache"] = status
 
 
-def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
-    if not contents:
-        raise HTTPException(400, "Uploaded file is empty.")
-    if len(contents) > MAX_UPLOAD_BYTES:
-        raise HTTPException(413, f"Uploaded file exceeds {MAX_UPLOAD_BYTES} bytes.")
-    if b"\x00" in contents[:4096]:
-        raise HTTPException(400, "Uploaded file appears to be binary.")
+def _extract_bearer_token(value: str | None) -> str:
+    if not value:
+        return ""
+    scheme, _, token = value.partition(" ")
+    if scheme.lower() != "bearer":
+        return ""
+    return token.strip()
 
-    sample = contents[:4096].lstrip()
-    lowered_name = filename.lower()
-    if ext == ".json":
-        if not sample.startswith((b"{", b"[")):
-            raise HTTPException(400, "JSON uploads must contain JSON content.")
-    elif ext == ".csv":
-        lowered_sample = sample[:128].lower()
-        if lowered_sample.startswith((b"{", b"[", b"<!doctype", b"<html", b"<?xml")):
-            raise HTTPException(400, "CSV uploads must contain CSV content.")
-        if not lowered_name.endswith(".csv"):
-            raise HTTPException(400, "CSV uploads must use a .csv filename.")
+
+def _require_admin_access(request: Request) -> None:
+    expected_token = os.environ.get("ADMIN_API_TOKEN", "").strip()
+    if not expected_token:
+        return
+
+    provided_token = (
+        request.headers.get("x-admin-token", "").strip()
+        or _extract_bearer_token(request.headers.get("authorization"))
+    )
+    if not provided_token or not secrets.compare_digest(provided_token, expected_token):
+        raise HTTPException(status_code=401, detail="Admin token required.")
 
 
 # CORS
@@ -290,7 +292,8 @@ def status():
 
 # ── Dashboard ─────────────────────────────────────────────────────────
 @app.get("/api/dashboard")
-def dashboard():
+def dashboard(request: Request):
+    _require_admin_access(request)
     sb = get_supabase()
     try:
         product_count = sb.table('products').select('id', count='exact').limit(0).execute().count or 0
