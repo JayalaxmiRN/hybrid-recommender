@@ -1096,10 +1096,14 @@ def get_categories():
             return {"categories": result.data}
     except Exception:
         pass
-    result = sb.table('products').select('category').limit(5000).execute()
-    cats = list(set(p['category'] for p in (result.data or []) if p.get('category')))
-    cats.sort()
-    return {"categories": cats}
+    try:
+        result = sb.table('products').select('category').limit(5000).execute()
+        cats = list(set(p['category'] for p in (result.data or []) if p.get('category')))
+        cats.sort()
+        return {"categories": cats}
+    except Exception as e:
+        logger.error("Failed to retrieve categories: %s", e)
+        return {"categories": []}
 
 
 # ── Purchases ─────────────────────────────────────────────────────────
