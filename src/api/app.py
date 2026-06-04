@@ -349,14 +349,14 @@ else:
                         item_title = exact.iloc[0]
                         recs = hybrid_model.recommend(item_title,top_n=top_n,explain=True,diversity=diversity,serendipity=serendipity,)
 
-                if collab_model is None:
-                        badge       = "📄 CONTENT-BASED"
-                        badge_color = "green"
-                else:
-                        badge       = "🔀 HYBRID"
-                        badge_color = "violet"
-                    
-                query_item_for_explanation = item_title
+                    if collab_model is None:
+                            badge       = "📄 CONTENT-BASED"
+                            badge_color = "green"
+                    else:
+                            badge       = "🔀 HYBRID"
+                            badge_color = "violet"
+                        
+                    query_item_for_explanation = item_title
 
                 # ── Generate LLM explanations if enabled ──────────────────
                 if enable_llm_explanations and st.session_state.explainer and recs:
@@ -445,6 +445,8 @@ else:
                             st.write("*Explanation not available*")
                         # Explainable AI Dashboard
                         exp = rec.get("explanation")
+                        if exp and exp.get("human_explanation"):
+                            st.info(exp["human_explanation"])
 
                         if exp:
                             with st.expander("📊 Explainable AI Dashboard", expanded=False):

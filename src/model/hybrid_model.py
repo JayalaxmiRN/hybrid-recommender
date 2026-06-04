@@ -601,6 +601,26 @@ class HybridRecommender:
             'popularity_bonus': round(0.05 * popularity, 4),
         }
         strongest = max(weighted_components, key=weighted_components.get)
+        if strongest == "content":
+            explanation_text = (
+                f"Recommended due to strong content similarity "
+                f"with '{source_title}'."
+                )
+
+        elif strongest == "collaborative":
+            explanation_text = (
+                "Recommended because users with similar preferences "
+                "also interacted with this item."
+                )
+        elif strongest == "sentiment":
+            explanation_text = (
+                "Recommended because it has highly positive reviews."
+                )
+
+        else:
+            explanation_text = (
+                "Recommended because of its popularity and overall score."
+                )
 
         return {
             'source_item': source_title,
@@ -614,7 +634,7 @@ class HybridRecommender:
                 'content': round(content_score, 4),
                 'collaborative': round(collab_score, 4),
                 'sentiment': round(sentiment_score, 4),
-                'raw_content': round(raw_item['raw_content'], 4),
+                'raw_content': roaund(raw_item['raw_content'], 4),
                 'raw_collaborative': round(raw_item['raw_collab'], 4),
                 'raw_sentiment': round(raw_item['raw_sentiment'], 4),
             },
@@ -626,6 +646,7 @@ class HybridRecommender:
                 'sentiment_polarity': self._sentiment_label(raw_item['raw_sentiment']),
                 'popularity': round(popularity, 4),
             },
+            "human_explanation": explanation_text,
         }
 
     @staticmethod
