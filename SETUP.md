@@ -67,10 +67,13 @@ conda activate hybridrec
 
 pip install -r requirements.txt
 pip install sentence-transformers
+```
 
-## Run your streamlit app easy way to run the app 
+## Run your streamlit app easy way to run the app
+```bash
 $env:PYTHONPATH="."
 streamlit run src/api/app.py
+```
 
 ### 6. Run with Docker
 Build the container image from the repository root:
