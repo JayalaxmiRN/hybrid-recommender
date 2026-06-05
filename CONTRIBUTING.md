@@ -92,7 +92,7 @@ cp .env.example .env.local
 cd ../backend && uvicorn main:app --reload
 
 # Terminal 2 — frontend
-cd frontend && npm run dev
+cd ../frontend && npm run dev
 ```
 
 ---
