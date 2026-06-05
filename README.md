@@ -417,7 +417,7 @@ Clone the repository and install the required dependencies with `pip install -r 
 <details>
 <summary><strong>What datasets does this project use?</strong></summary>
 
-This project uses datasets related to user interactions, ratings, and item metadata to generate recommendations. The exact dataset files are usually stored inside the data or datasets directory. You can check the project documentation for download links and formatting details.
+This project uses datasets related to user interactions, ratings, and item metadata to generate recommendations. The exact dataset files are usually stored inside the `datasets/` directory. You can check the project documentation for download links and formatting details.
 
 </details>
 
