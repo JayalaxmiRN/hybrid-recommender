@@ -6,8 +6,14 @@ import sys
 from pathlib import Path  # <-- Added
 from dotenv import load_dotenv  # <-- Added
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
+from src.api.response_utils import success_response, error_response
+
 from pydantic import BaseModel
 from typing import Optional
+
+import logging
+logger = logging.getLogger(__name__)
 
 # Calculate absolute paths and load environment variables first
 CURRENT_DIR = Path(__file__).parent.resolve()
@@ -82,7 +88,7 @@ def startup_event():
             break
 
     if not loaded:
-        print("Warning: No datasets found for API startup.")
+        logger.warning("Warning: No datasets found for API startup.")
         return
 
     interaction_df, item_df = dm.merge_all()
@@ -94,12 +100,25 @@ def startup_event():
 
 @app.post("/recommend")
 def get_recommendations(req: RecommendationRequest):
-    if _content_model is None:
-        raise HTTPException(status_code=503, detail="Models not loaded")
+    from src.model.validation import validate_recommendations
 
-    # ===================================================================
+    if _content_model is None:
+        fallback_recs = validate_recommendations(
+            None,
+            top_n=req.top_n,
+            default_fallback_items=_item_df["title"].tolist() if _item_df is not None and not _item_df.empty else None,
+            context="hybrid"
+        )
+        return success_response(
+            recommendations=fallback_recs,
+            model_name="hybrid",
+            message="Models not loaded. Serving trending fallback layout.",
+            causal_debiasing_applied=req.use_causal,
+            fallback=True,
+            note="Models not loaded. Serving trending fallback layout."
+        )
+
     # Try the Primary Hybrid Pipeline
-    # ===================================================================
     try:
         causal_cfg = (
             CausalConfig(
@@ -117,16 +136,20 @@ def get_recommendations(req: RecommendationRequest):
             _item_df,
             causal_config=causal_cfg,
         )
-        recs = model.recommend(title=req.query, user_id=req.user_id, top_n=req.top_n)
-        return {
-            "recommendations": recs,
-            "causal_debiasing_applied": req.use_causal,
-            "fallback": False,
-        }
 
-    # ===================================================================
+
+
+
+        recs = model.recommend(title=req.query, user_id=req.user_id, top_n=req.top_n)
+        return success_response(
+            recommendations=recs,
+            model_name="hybrid",
+            message="Recommendations retrieved successfully",
+            causal_debiasing_applied=req.use_causal,
+            fallback=False
+        )
+
     # Graceful Popularity Fallback Recovery Layer (#678)
-    # ===================================================================
     except Exception as exc:
         import logging
         logger = logging.getLogger("uvicorn.error")
@@ -155,13 +178,26 @@ def get_recommendations(req: RecommendationRequest):
                 for item in popular_items
             ]
             
-            return {
-                "recommendations": fallback_recs,
-                "causal_debiasing_applied": False,
-                "fallback": True,
-                "note": "Primary pipeline encountered an error. Serving trending fallback layout."
-            }
+            return success_response(
+                recommendations=fallback_recs,
+                model_name="hybrid",
+                message="Primary pipeline encountered an error. Serving trending fallback layout.",
+                causal_debiasing_applied=False,
+                fallback=True,
+                note="Primary pipeline encountered an error. Serving trending fallback layout."
+            )
             
         except Exception as fallback_exc:
             logger.critical(f"Critical System Outage: Fallback engine failed: {str(fallback_exc)}")
-            raise HTTPException(status_code=500, detail="Recommendation engine completely offline.")
+
+            return JSONResponse(
+                status_code=500,
+                content=error_response(
+                    message="Recommendation engine completely offline.",
+                    model_name="hybrid",
+                    detail="Recommendation engine completely offline."
+                )
+            )
+
+
+
