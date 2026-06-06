@@ -104,7 +104,11 @@ async def csrf_header_dep(
     """Declares X-CSRF-Token in OpenAPI. Enforcement is done by CSRFMiddleware."""
     pass
 
+# ── App ──────────────────────────────────────────────────────────────
+from src.api.exceptions import register_exception_handlers
+
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
+register_exception_handlers(app)
 
 @app.on_event("startup")
 def download_nltk_assets():
