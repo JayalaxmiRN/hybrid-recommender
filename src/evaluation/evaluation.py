@@ -1,172 +1,3 @@
-"""
-evaluation.py — Model Performance Benchmarking
-===============================================
-Computes Precision@K, Recall@K, and NDCG@K for four recommendation modes:
-  - content       (TF-IDF cosine similarity only)
-  - collaborative (Truncated SVD only)
-  - sentiment     (VADER sentiment only)
-  - hybrid        (weighted blend of all three)
-
-Usage as CLI (unchanged from original behaviour):
-    python evaluation.py
-    python evaluation.py --k 20
-    python evaluation.py --k 10 --mode hybrid
-
-Usage as importable module (new — used by /api/evaluate endpoint):
-    from evaluation import run_evaluation
-    results = run_evaluation(k=10, mode="all", weights={"alpha":0.4,"beta":0.4,"gamma":0.2})
-"""
-
-from __future__ import annotations
-
-import argparse
-import json
-import math
-import os
-from pathlib import Path
-from typing import Literal
-
-import numpy as np
-import pandas as pd
-
-# ---------------------------------------------------------------------------
-# Types
-# ---------------------------------------------------------------------------
-
-Mode = Literal["content", "collaborative", "sentiment", "hybrid", "all"]
-
-MetricsDict = dict[str, float]          # {"precision": 0.4, "recall": 0.38, "ndcg": 0.51}
-ResultsDict = dict[str, MetricsDict]    # {"content": {...}, "hybrid": {...}, ...}
-UNSAFE_CACHE_SUFFIXES = {".pkl", ".pickle"}
-
-
-# ---------------------------------------------------------------------------
-# Core metric helpers with safety guards against ZeroDivisionError
-# ---------------------------------------------------------------------------
-
-def _precision_at_k(recommended: list, relevant: set, k: int) -> float:
-    """Fraction of top-K recommended items that are relevant."""
-    if not relevant or k == 0 or not recommended:
-        return 0.0
-    hits = sum(1 for item in recommended[:k] if item in relevant)
-    return hits / k
-
-
-def _recall_at_k(recommended: list, relevant: set, k: int) -> float:
-    """Fraction of relevant items found in top-K recommendations."""
-    if not relevant or k == 0 or not recommended:
-        return 0.0
-    hits = sum(1 for item in recommended[:k] if item in relevant)
-    
-    # FIX FOR ISSUE #486: Guard cold states to prevent ZeroDivisionError
-    denom = len(relevant)
-    return hits / denom if denom > 0 else 0.0
-
-
-def _dcg_at_k(recommended: list, relevant: set, k: int) -> float:
-    """Discounted Cumulative Gain at K."""
-    if not recommended or not relevant or k == 0:
-        return 0.0
-    dcg = 0.0
-    for i, item in enumerate(recommended[:k], start=1):
-        if item in relevant:
-            dcg += 1.0 / math.log2(i + 1)
-    return dcg
-
-
-def _ndcg_at_k(recommended: list, relevant: set, k: int) -> float:
-    """Normalised DCG at K (IDCG assumes all relevant items are at top)."""
-    dcg = _dcg_at_k(recommended, relevant, k)
-    ideal = _dcg_at_k(list(relevant)[:k], relevant, k)
-    
-    # FIX FOR ISSUE #486: Handle zero baseline ideal scores gracefully
-    return dcg / ideal if ideal > 0.0 else 0.0
-
-
-# Public wrappers used by benchmark.py
-def ndcg_at_k(recommended: list, relevant: set, k: int) -> float:
-    """Exported wrapper for normalized DCG."""
-    return _ndcg_at_k(recommended, relevant, k)
-
-
-def average_precision_at_k(recommended: list, relevant: set, k: int) -> float:
-    """Average Precision at K (AP@K).
-
-    Implemented as sum(precision@i * rel_i) / min(|relevant|, k).
-    """
-    if not relevant or k == 0 or not recommended:
-        return 0.0
-    hits = 0
-    precisions = 0.0
-    for i, item in enumerate(recommended[:k], start=1):
-        if item in relevant:
-            hits += 1
-            precisions += hits / i
-    denom = min(len(relevant), k)
-    return precisions / denom if denom > 0 else 0.0
-
-
-# New metrics requested: MRR, Hit Rate, Catalog Coverage, ILD
-def _mean_reciprocal_rank(recommended: list, relevant: set, k: int) -> float:
-    """Mean Reciprocal Rank (MRR) — rank of first relevant item."""
-    if not relevant or k == 0 or not recommended:
-        return 0.0
-    for i, item in enumerate(recommended[:k], start=1):
-        if item in relevant:
-            return 1.0 / i
-    return 0.0
-
-
-def _hit_rate(recommended: list, relevant: set, k: int) -> float:
-    """Hit Rate — 1.0 if at least one relevant item in top-K."""
-    if not relevant or k == 0 or not recommended:
-        return 0.0
-    return 1.0 if any(item in relevant for item in recommended[:k]) else 0.0
-
-
-def _catalog_coverage(all_recommendations: list[list], catalog_size: int) -> float:
-    """Catalog coverage: fraction of unique items recommended."""
-    if not all_recommendations or catalog_size == 0:
-        return 0.0
-    unique = set()
-    for recs in all_recommendations:
-        unique.update(recs)
-    return len(unique) / catalog_size
-
-
-def _intra_list_diversity(
-    recommended: list[str], df: pd.DataFrame, tfidf_matrix
-) -> float:
-    """Intra-List Diversity (ILD) using TF-IDF cosine dissimilarity.
-
-    Returns 1 - average_pairwise_similarity. If TF-IDF matrix is not
-    available or list too small, returns 0.0.
-    """
-    if tfidf_matrix is None or len(recommended) <= 1:
-        return 0.0
-    from sklearn.metrics.pairwise import cosine_similarity
-
-    indices = []
-    for title in recommended:
-        try:
-            idx = df[df["title"] == title].index[0]
-            indices.append(idx)
-        except IndexError:
-            continue
-    if len(indices) <= 1:
-        return 0.0
-    sims = []
-    for i in range(len(indices)):
-        for j in range(i + 1, len(indices)):
-            sim = cosine_similarity(
-                tfidf_matrix[indices[i]], tfidf_matrix[indices[j]]
-            )[0, 0]
-            sims.append(sim)
-    avg_sim = float(np.mean(sims)) if sims else 0.0
-    return 1.0 - avg_sim
-
-
-# Small helper used by benchmark to build models/test pairs
 def _build_test_data(
     data_path: str | None = None,
     random_seed: int = 42,
@@ -176,7 +7,19 @@ def _build_test_data(
     Uses a fixed ``random_seed`` so that repeated calls with the same dataset
     produce the same test pairs, making benchmark comparisons stable.
 
-    Returns (content_model, collab_model, df, test_pairs).
+    Args:
+        data_path (str | None, optional): File path to source dataset CSV. 
+            Defaults to None (which falls back to the DATA_PATH environment variable 
+            or "data/products.csv").
+        random_seed (int, optional): Seed value used to maintain reproducible 
+            sampling of test pairs. Defaults to 42.
+
+    Returns:
+        tuple: A 4-element tuple containing:
+            - content_model (ContentRecommender or None): Initialized content filtering model.
+            - collab_model (_Collab or None): Dummy structural SVD model wrapper.
+            - df (pd.DataFrame or None): Cleaned and prepared Pandas DataFrame.
+            - test_pairs (list): Collection of evaluation pairs for benchmarking metrics.
     """
     rng = np.random.default_rng(random_seed)
     from src.model.content_model import ContentRecommender
