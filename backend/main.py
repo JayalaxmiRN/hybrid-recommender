@@ -134,11 +134,11 @@ _cache_hits = 0
 _cache_misses = 0
 ADMIN_API_TOKEN_ENV = "ADMIN_API_TOKEN"
 
-# ── FIX #1292: AMORTIZED RATE LIMIT METRICS GLOBALS ──────────────────
-_rate_limit_buckets: dict = {}
+# ── FIX #1292: O(1) LRU RATE LIMIT METRICS GLOBALS ──────────────────
+from collections import OrderedDict
+_rate_limit_buckets = OrderedDict()
 _rate_limit_lock = Lock()
-_request_counter = 0
-CLEANUP_THRESHOLD = 10000  # Defensive boundary check to protect physical memory leak
+MAX_RATE_LIMIT_IPS = 10000
 
 _cache_lock = Lock()
 _redis_client: Redis | None = None
@@ -245,6 +245,9 @@ def _apply_rate_limit(ip_address: str) -> bool:
         bucket = _rate_limit_buckets.get(ip_address)
         if bucket is None:
             bucket = {"tokens": 10.0, "last_updated": current_time}
+            _rate_limit_buckets[ip_address] = bucket
+        else:
+            _rate_limit_buckets.move_to_end(ip_address)
         else:
             elapsed = current_time - bucket["last_updated"]
             bucket["tokens"] = min(10.0, bucket["tokens"] + elapsed * 1.0)
@@ -257,6 +260,9 @@ def _apply_rate_limit(ip_address: str) -> bool:
         else:
             allowed = False
             
+        # Optimization: O(1) Eviction to prevent memory leak and Algorithmic Complexity DoS
+        if len(_rate_limit_buckets) > MAX_RATE_LIMIT_IPS:
+            _rate_limit_buckets.popitem(last=False)
         # Optimization: Move cleanup out of the request loop path
         global _request_counter
         _request_counter += 1
