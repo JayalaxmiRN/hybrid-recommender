@@ -14,7 +14,7 @@ import time
 import logging
 import math
 import secrets
-import re
+
 import json
 from redis import Redis
 from redis.exceptions import RedisError
@@ -272,3 +272,114 @@ def _apply_rate_limit(*args, **kwargs):
                 del _rate_limit_buckets[k]
                 
     return allowed
+
+# ---------------------------------------------------------------------------
+# Pydantic Schemas for Validation
+# ---------------------------------------------------------------------------
+
+class SearchRequest(BaseModel):
+    query: str = Field(..., max_length=MAX_SEARCH_QUERY_LENGTH)
+    limit: Optional[int] = 5
+
+
+    item_title: str
+    top_n: Optional[int] = 10
+    explain: Optional[bool] = False
+    strategy: Optional[str] = "hybrid"
+
+class TuningWeights(BaseModel):
+    alpha: float = Field(..., ge=0.0, le=1.0)
+    beta: float = Field(..., ge=0.0, le=1.0)
+    gamma: float = Field(..., ge=0.0, le=1.0)
+
+# ---------------------------------------------------------------------------
+# API Endpoints & Core Logic
+# ---------------------------------------------------------------------------
+
+@app.get("/api/csrf-token", response_model=CSRFTokenResponse)
+def get_csrf_token_endpoint(request: Request, response: Response):
+    """Generates a secure CSRF token and sets it in the user's browser cookies."""
+    token = generate_csrf_token()
+    set_csrf_cookie(response, token)
+    return {"csrfToken": token}
+
+
+
+    try:
+        supabase = get_supabase()
+        res = supabase.rpc("search_products_fts", {"search_query": cleaned_query, "row_limit": req.limit or 5}).execute()
+        return success_response(res.data or [])
+    except Exception as e:
+        logger.error(f"Full-text search failure: {e}", exc_info=True)
+        return error_response("Catalog search service is temporarily unavailable.")
+
+@app.post("/api/v1/upload")
+async def upload_dataset(
+    file: UploadFile = File(...),
+    dependencies: None = Depends(csrf_header_dep)
+):
+    """Processes, adapts, and validates custom CSV/JSON product file uploads."""
+    contents = await file.read()
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File payload configuration exceeds maximum allowed limits.")
+
+    try:
+        file_extension = os.path.splitext(file.filename or "").lower()
+        raw_df = read_file(io.BytesIO(contents), file_extension)
+        adapted_df = adapt_data(raw_df)
+        
+        # Trigger asynchronous sentiment scoring block on incoming texts
+        scored_df = await asyncio.to_thread(batch_analyze, adapted_df)
+        records = scored_df.to_dict(orient="records")
+        
+        return success_response({
+            "filename": file.filename,
+            "total_records": len(records),
+            "preview": records[:3]
+        })
+    except Exception as e:
+        logger.error(f"Dataset upload pipeline error: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"Failed to process dataset file structure: {str(e)}")
+
+@app.post("/api/v1/tune-weights")
+async def update_hybrid_weights(weights: TuningWeights, dependencies: None = Depends(csrf_header_dep)):
+    """Dynamically scales model weights for the multi-signal hybrid recommendation system."""
+    total = weights.alpha + weights.beta + weights.gamma
+    if total == 0:
+        raise HTTPException(status_code=400, detail="Combined component weights cannot equal zero.")
+    
+    normalized = {
+        "alpha": weights.alpha / total,
+        "beta": weights.beta / total,
+        "gamma": weights.gamma / total
+    }
+    return success_response({"message": "Weights updated successfully", "normalized_weights": normalized})
+
+# ---------------------------------------------------------------------------
+# Real-Time Asynchronous WebSockets
+# ---------------------------------------------------------------------------
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                pass
+
+
+
+frontend_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
+if os.path.exists(os.path.join(frontend_path, "index.html")):
+    app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
+
