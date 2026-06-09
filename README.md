@@ -410,14 +410,14 @@ NDCG@K       —  ranking quality (discounted cumulative gain)
 <details>
 <summary><strong>How do I set up the project locally?</strong></summary>
 
-Clone the repository and install the required dependencies with `pip install -r requirements.txt`. After that, configure the environment variables if needed and start both the frontend and backend servers. Make sure your database or dataset files are also available before running the app.
+Clone the repository and install the required dependencies using the package manager mentioned in the project documentation. After that, configure the environment variables if needed and start both the frontend and backend servers. Make sure your database or dataset files are also available before running the app.
 
 </details>
 
 <details>
 <summary><strong>What datasets does this project use?</strong></summary>
 
-This project uses datasets related to user interactions, ratings, and item metadata to generate recommendations. The exact dataset files are usually stored inside the `datasets/` directory. You can check the project documentation for download links and formatting details.
+This project uses datasets related to user interactions, ratings, and item metadata to generate recommendations. The exact dataset files are usually stored inside the data or datasets directory. You can check the project documentation for download links and formatting details.
 
 </details>
 
