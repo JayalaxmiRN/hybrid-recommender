@@ -188,6 +188,7 @@ def get_recommendations(req: RecommendationRequest):
                 )
             )
 
+
 @app.post("/recommendations")
 def get_recommendations_legacy(req: RecommendationRequest):
     """

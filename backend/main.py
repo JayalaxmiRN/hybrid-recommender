@@ -1052,19 +1052,19 @@ def search_items(
             result = query_builder.limit(limit).offset(offset).execute()
             products = result.data or []
     
-        except Exception as e:
+    except Exception as e:
         logger.warning("Search fallback to mock products: %s", e)
         products = MOCK_PRODUCTS
 
-        if query:
-            query_lower = query.lower()
+    if query:
+        query_lower = query.lower()
 
-            products = [
-                p for p in products
-                if query_lower in str(p.get('title', '')).lower()
-                or query_lower in str(p.get('description', '')).lower()
-                or query_lower in str(p.get('category', '')).lower()
-            ]
+        products = [
+            p for p in products
+            if query_lower in str(p.get('title', '')).lower()
+            or query_lower in str(p.get('description', '')).lower()
+            or query_lower in str(p.get('category', '')).lower()
+        ]
 
     for p in products:
         p['rank'] = 0.0
@@ -1639,43 +1639,42 @@ def build_models():
 
         collab_model = None
         with _model_lock:
+            try:
+                purchases_result = sb.table('purchases').select(
+                    'user_id, product_id, rating'
+                ).limit(50000).execute()
 
-        try:
-            purchases_result = sb.table('purchases').select(
-                'user_id, product_id, rating'
-            ).limit(50000).execute()
+                purchases = purchases_result.data or []
 
-            purchases = purchases_result.data or []
+                if len(purchases) > 10:
+                    product_title_map = {
+                        p['id']: p['title']
+                        for p in all_products
+                    }
 
-            if len(purchases) > 10:
-                product_title_map = {
-                    p['id']: p['title']
-                    for p in all_products
-                }
+                    interaction_rows = []
 
-                interaction_rows = []
+                    for p in purchases:
+                        title = product_title_map.get(p['product_id'])
 
-                for p in purchases:
-                    title = product_title_map.get(p['product_id'])
+                        if title:
+                            interaction_rows.append({
+                                'user_id': p['user_id'],
+                                'title': title,
+                                'rating': p.get('rating', 3.0)
+                            })
 
-                    if title:
-                        interaction_rows.append({
-                            'user_id': p['user_id'],
-                            'title': title,
-                            'rating': p.get('rating', 3.0)
-                        })
+                    if len(interaction_rows) > 10:
+                        interaction_df = pd.DataFrame(interaction_rows)
 
-                if len(interaction_rows) > 10:
-                    interaction_df = pd.DataFrame(interaction_rows)
+                        if interaction_df['user_id'].nunique() > 1:
+                            collab_model = CollaborativeRecommender(interaction_df)
 
-                    if interaction_df['user_id'].nunique() > 1:
-                        collab_model = CollaborativeRecommender(interaction_df)
-
-        except Exception as e:
-            logger.warning(
-                "Collaborative model data load failed: %s",
-                e
-            )
+            except Exception as e:
+                logger.warning(
+                    "Collaborative model data load failed: %s",
+                    e
+                )
 
         hybrid_model = HybridRecommender(
             content_model,
@@ -1794,46 +1793,46 @@ def get_recommendations(
         _set_cache_headers(response, "HIT")
         return cached
 
-with _model_lock:
-    hybrid_model = selected_models["hybrid"]
+    with _model_lock:
+        hybrid_model = selected_models["hybrid"]
 
-if hybrid_model is None:
-    raise HTTPException(
-        status_code=500,
-        detail="Hybrid model not available."
-    )
+    if hybrid_model is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Hybrid model not available."
+        )
 
-recs = hybrid_model.recommend(
-    query_title,
-    top_n=top_n,
-    explain=explain,
-    target_catalog=target_catalog
-)
-
-# Popularity fallback (existing behaviour)
-if not recs and strategy == "popularity" and models["collab"]:
-    recs = models["collab"]._popularity_fallback(top_n)
-
-# Cold-start fallback: blend content similarity with popularity/rating
-if not recs and strategy == "cold":
-    combined_text = query_title
-    cold_recs = cold_start_recommendation(
-        combined_text,
+    recs = hybrid_model.recommend(
+        query_title,
         top_n=top_n,
+        explain=explain,
         target_catalog=target_catalog
     )
-    if cold_recs:
-        recs = cold_recs
-    if not recs:
-        return JSONResponse(
-            status_code=404,
-            content=error_response(
-                message="Item not found or no recommendations.",
-                model_name="hybrid",
-                version=model_version or ACTIVE_MODEL_VERSION,
-                detail="Item not found or no recommendations."
-            )
+
+    # Popularity fallback (existing behaviour)
+    if not recs and strategy == "popularity" and models["collab"]:
+        recs = models["collab"]._popularity_fallback(top_n)
+
+    # Cold-start fallback: blend content similarity with popularity/rating
+    if not recs and strategy == "cold":
+        combined_text = query_title
+        cold_recs = cold_start_recommendation(
+            combined_text,
+            top_n=top_n,
+            target_catalog=target_catalog
         )
+        if cold_recs:
+            recs = cold_recs
+        if not recs:
+            return JSONResponse(
+                status_code=404,
+                content=error_response(
+                    message="Item not found or no recommendations.",
+                    model_name="hybrid",
+                    version=model_version or ACTIVE_MODEL_VERSION,
+                    detail="Item not found or no recommendations."
+                )
+            )
 
     has_history = False
     if user_id and models.get("collab") is not None:
@@ -1902,6 +1901,35 @@ if not recs and strategy == "cold":
     _set_cached_response(cache_key, payload)
     _set_cache_headers(response, "MISS")
     return payload
+
+
+@app.get("/api/recommendations")
+@app.get("/api/recommendations/{item_title}")
+def get_recommendations_alias(
+    request: Request,
+    response: Response,
+    item_title: Optional[str] = None,
+    title: Optional[str] = Query(None),
+    top_n: int = 10,
+    explain: bool = Query(False),
+    user_id: Optional[str] = Query(None),
+    target_catalog: Optional[str] = Query(None),
+    model_version: Optional[str] = Query(None),
+    strategy: Optional[str] = Query(None),
+):
+    """Backward-compatible alias for clients calling /api/recommendations."""
+    return get_recommendations(
+        request=request,
+        response=response,
+        item_title=item_title,
+        title=title,
+        top_n=top_n,
+        explain=explain,
+        user_id=user_id,
+        target_catalog=target_catalog,
+        model_version=model_version,
+        strategy=strategy,
+    )
 
 
 
@@ -2632,4 +2660,3 @@ if os.path.isdir(frontend_dir):
     @app.get("/dashboard.html")
     def serve_dashboard():
         return FileResponse(os.path.join(frontend_dir, "dashboard.html"))
-
