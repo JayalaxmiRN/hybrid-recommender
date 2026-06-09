@@ -42,6 +42,7 @@
 
 ---
 
+
 ## 01 — Architecture
 
 The core insight: blend three independent signals, each capturing something the others miss.
