@@ -242,13 +242,13 @@ MOCK_PRODUCTS = [
 
 
 def _get_slow_response_threshold_ms() -> float:
-
     try:
         return float(os.environ.get("RESPONSE_TIME_SLOW_MS", DEFAULT_SLOW_RESPONSE_THRESHOLD_MS))
     except ValueError:
         return DEFAULT_SLOW_RESPONSE_THRESHOLD_MS
 
 
+def _cache_key(*parts: Any) -> str:
     return ":".join(str(part).strip().lower() for part in parts)
 
 
@@ -260,7 +260,7 @@ def _get_cached_response(key: str):
             if cached is not None:
                 _cache_hits += 1
                 return json.loads(cached)
-        except Exception:
+        except (RedisError, json.JSONDecodeError):
             pass
 
     with _cache_lock:
@@ -1362,7 +1362,7 @@ def search_items(
     
             result = query_builder.limit(limit).offset(offset).execute()
             products = result.data or []
-    
+
     except Exception as e:
         logger.warning("Search fallback to mock products: %s", e)
         products = MOCK_PRODUCTS
@@ -1370,12 +1370,12 @@ def search_items(
     if query:
         query_lower = query.lower()
 
-            products = [
-                p for p in products
-                if query_lower in str(p.get('title', '')).lower()
-                or query_lower in str(p.get('description', '')).lower()
-                or query_lower in str(p.get('category', '')).lower()
-            ]
+        products = [
+            p for p in products
+            if query_lower in str(p.get('title', '')).lower()
+            or query_lower in str(p.get('description', '')).lower()
+            or query_lower in str(p.get('category', '')).lower()
+        ]
 
         for p in products:
             if 'rank' not in p or p['rank'] is None:
@@ -2450,14 +2450,20 @@ def get_categories():
         logger.error("Failed to retrieve categories: %s", e)
         return {"categories": []}
     
-    @app.post("/api/interactions")
-    def log_interaction(data: InteractionCreate):
-        USER_INTERACTIONS.append({
-            "user_id": data.user_id,
-            "item_id": data.item_id,
-            "interaction_type": data.interaction_type,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        })
+@app.post("/api/interactions")
+def log_interaction(data: InteractionCreate):
+
+    USER_INTERACTIONS.append({
+        "user_id": data.user_id,
+        "item_id": data.item_id,
+        "interaction_type": data.interaction_type,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+
+    return {
+        "message": "Interaction logged successfully",
+        "interaction": USER_INTERACTIONS[-1]
+    }
 
         return {
             "message": "Interaction logged successfully",
